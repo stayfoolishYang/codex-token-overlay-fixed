@@ -2,10 +2,12 @@
 
 [English](README.md)
 
-Codex Token 状态条是一个只读桌面小工具，用于显示 Codex Desktop 当前选中任务的 Token 使用情况。它支持 Windows 和 macOS，通过 Codex 本机 IPC 跟随当前任务，并从本地 JSONL 会话日志读取统计数据；因此切换到没有正在运行的旧任务时也能立即刷新。
+Codex Token 状态条是一个只读桌面小工具，用于显示 Codex Desktop 当前选中任务的 Token 使用情况。Windows 根据前台窗口的可访问文档标题和本地会话索引识别对话，macOS 通过 Codex 本机 IPC 跟随任务。两者均从本地 JSONL 会话日志读取统计数据，切换到静止的旧任务也不要求日志产生新写入。
 
 > [!IMPORTANT]
-> 这是非官方社区项目，并非由 OpenAI 开发、认可或提供支持。它依赖 Codex Desktop 的本地 JSONL 格式和内部 IPC 消息；这些内部实现可能在未来版本中改变。
+> 这是非官方社区项目，并非由 OpenAI 开发、认可或提供支持。它依赖 Codex Desktop 的可访问文档标题、会话索引、本地 JSONL 格式和内部 IPC 消息；这些内部实现可能在未来版本中改变。
+
+本仓库包含 Windows 对话切换修复，暂未发布包含此修复的 Release；请按[源码构建](#从源码构建)使用。上游发行包不包含本仓库 Unreleased 中记录的改动。
 
 ## Windows 上下文余量与提醒
 
@@ -13,8 +15,9 @@ Codex Token 状态条是一个只读桌面小工具，用于显示 Codex Desktop
 20%、10%、5% 时触发 Windows 通知；按对话独立去重，压缩后恢复超过
 阈值 3 个百分点可再次提醒。托盘“上下文不足提醒”可关闭通知。
 
-沿用上游已有的对话跟随能力和本地只读架构。计算改用最近一次输入
- tokens；窗口未知时显示破折号，无法识别当前对话时暂停自动提醒。
+保留本地只读架构，Windows 对话识别改为前台窗口标题与会话索引匹配。
+计算使用最近一次输入 tokens；模型窗口未知时显示破折号，无法识别
+当前对话时暂停自动提醒。显式锁定当前已显示的会话时仍可提醒。
 百分比是日志快照，不保证预测下一次请求或压缩时间。
 
 详细配置、编译和限制见 [改造说明](README.context-monitor.zh-CN.md)。
@@ -22,17 +25,18 @@ Codex Token 状态条是一个只读桌面小工具，用于显示 Codex Desktop
 ## 主要功能
 
 - 跟随 Codex Desktop 当前选中的任务，包括当前没有运行的任务。
-- 切换任务时立即解析该任务已有日志，不要求日志产生新写入。
+- 识别到任务切换后解析该任务已有日志，不要求日志产生新写入。
 - 两个平台都显示总量、输入、输出、缓存命中 Token、推导出的缓存未命中、推理输出和上下文占用；Windows 另外显示缓存命中率。
 - 可以自由选择实际显示哪些字段，并保证至少保留一个字段。
 - Windows 使用不会抢占输入焦点、跟随 Codex 主窗口的胶囊和系统托盘菜单。
 - macOS 使用原生菜单栏，并可从菜单设置登录时启动。
-- 内部 IPC 不可用时自动退回最近更新的 Codex Desktop 根会话。
-- 只读取本地文件，不含遥测、分析、网络 API 或上传功能。
+- Windows 识别到切换后先清除旧数值，无法唯一识别当前标题时显示等待。
+- macOS 内部 IPC 不可用时自动退回最近更新的 Codex Desktop 根会话。
+- 只读取本地状态，不含遥测、分析、网络 API 或上传功能。
 
 ## 下载
 
-请从 [GitHub Releases](../../releases) 下载最新 ZIP。
+目前没有包含本仓库 Windows 切换修复的下载包。下表说明原项目的[上游发行文件](https://github.com/soleillevant0125/codex-token-overlay/releases)；使用本次修复请从源码构建。
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
@@ -51,8 +55,8 @@ Windows Arm64 安装包目前由 x64 环境交叉构建，并在 CI 中完成 PE
 
 ## Windows 使用方法
 
-1. 已安装 .NET 10 Desktop Runtime 时下载 `-lite.zip`；否则下载相同架构、文件名中不带 `-lite` 的独立版。
-2. 解压到任意位置。
+1. 按下文从本仓库源码构建并发布。已安装对应 .NET 10 Desktop Runtime 时可生成 Lite；Standalone 会包含运行时。
+2. 将生成的本地发行包解压到任意位置，或直接打开发布目录。
 3. 双击 `CodexTokenOverlay.exe`。
 
 Windows 默认使用手动主窗口吸附。请在托盘选择**调整位置和大小…**，再把胶囊拖到 Codex 主窗口上。程序会保存主窗口八个参考点（四个角点和四条边的中点）中离胶囊最近的一点及相对偏移，因此 Codex 窗口移动或调整大小时，胶囊会继续跟随同一参考点和相对位置。放到内置宠物、桌面、其他应用或任何其他非主窗口的 Codex 表面都属于无效操作：目标高亮会清除、无法保存，并立即恢复到上一个有效位置。拖动胶囊右下角的缩放手柄，可以在 60%–130% 之间连续等比调整整个胶囊与展开面板，包括文字、间距、圆角和内边距。
@@ -62,6 +66,8 @@ Windows 默认使用手动主窗口吸附。请在托盘选择**调整位置和�
 可在托盘菜单的**收起时显示 > 左侧指标/右侧指标**中分别选择收起状态的两项内容。兼容子菜单**传统定位**保留**标题栏右上、自动吸附、窗口内右上、窗口内右下**，供旧工作流继续使用；选择任一传统位置会停用手动吸附，直到再次调整或重置。传统的窗口内右下模式会向上展开。标题栏模式会在请求比例之下选择能够完整容纳在标题栏内的最大比例，不会移入 Codex 客户区；空间恢复时会自动恢复请求比例。其他狭窄位置仍会按“双指标 → 单指标 → 隐藏”降级，空间恢复后自动显示。
 
 普通点击胶囊会展开完整指标面板；再次点击或点击其他位置会收起，点击面板内部则保持展开。整个过程不会夺走 Codex 输入框焦点。这里的视觉吸附由一个跟随 Codex 窗口几何位置的独立伴随窗口实现，并非注入 Codex 进程，也不是真正嵌入其 UI 树。胶囊、展开面板、编辑装饰和吸附目标环会实时跟随 Windows 应用的浅色/深色模式，无需重启，也不提供手动主题选项。只有可识别的 Codex Desktop 窗口位于前台时胶囊才显示，Codex 失去前台后会隐藏。托盘菜单还可选择展开字段、锁定当前任务、临时隐藏或退出。
+
+**锁定当前会话**锁定的是点击时已经显示数值的对话；之后切换任务仍显示该对话的数据，取消勾选后恢复跟随。取得 token 快照后才能使用此项，不会锁定尚未完成的后台读取目标。
 
 GitHub 上的未签名程序可能触发 Windows SmartScreen。请先确认文件来自本仓库并核对 SHA-256，再选择“更多信息 > 仍要运行”。
 
@@ -88,6 +94,8 @@ GitHub 上的未签名程序可能触发 Windows SmartScreen。请先确认文�
 1. 开发或测试时显式传入的 `--sessions <路径>`。
 2. 设置 `CODEX_HOME` 时使用 `$CODEX_HOME/sessions`。
 3. 默认使用 `~/.codex/sessions`。
+
+Windows 还会读取上述 `sessions` 目录旁的 `session_index.jsonl`，将前台文档标题匹配到对话 ID。索引缺失或不可读时显示等待识别。
 
 应用本身没有固定位置要求，不过 macOS 推荐放入 `/Applications`，这样“登录时启动”和 Gatekeeper 的行为更稳定。
 
@@ -116,17 +124,16 @@ GitHub 上的未签名程序可能触发 Windows SmartScreen。请先确认文�
 
 ## 当前任务跟随原理
 
-程序不会修改 Codex 数据：
+程序不会修改 Codex 数据。Windows 使用以下流程：
 
-1. 以只读客户端连接 Codex Desktop 的本地 IPC。
-   - Windows：`\\.\pipe\codex-ipc`
-   - macOS：`$CODEX_HOME/ipc/ipc.sock`，并兼容旧版临时 Socket 路径
-2. 监听当前 Codex 窗口正在跟随的任务 ID。
-3. 找到对应的根会话 JSONL，并读取最后一个完整的 `token_count` 事件。
-4. 一旦任务 ID 改变就强制解析，因此切换到未运行任务时不依赖日志更新。
-5. IPC 不可用时才退回最近更新的 Codex Desktop 根会话。
+1. 通过 Windows UI Automation 只读前台 Codex 主窗口中 `RootWebArea` 文档的名称，不控制窗口或改变焦点。
+2. 从 `session_index.jsonl` 中取得每个对话 ID 最新的完整标题记录，精确匹配当前文档标题。多个 ID 同名、未知标题、索引不可用或记录不完整时等待识别。
+3. 识别到路由变化后先清除上个对话的数值，再读取对应根会话 JSONL 中最后一个完整的 `token_count` 事件。日志或 token 快照缺失时显示等待。
+4. 发布识别结果前复核前台窗口、文档标题和索引版本。后台日志结果必须仍属于当前路由及切换轮次，快速 A → B → A 或锁定状态变化后到达的旧结果会被丢弃。
 
-macOS 版会验证 IPC 路径确实是当前用户拥有的 Unix Socket，并验证其目录不可被其他用户写入。程序只连接，不会创建、删除或替换 Codex 的 Socket。
+Windows 的对话识别与界面刷新目标轮询间隔为 150 ms，不保证点击后 150 ms 内完成刷新；可访问性提供方、磁盘读取或界面调度仍可能造成延迟。切换不依赖日志产生新写入，无法识别时也不会根据最近写入的后台日志猜测当前对话。Codex 失去前台时隐藏悬浮窗并保留最近路由，重新进入前台后再次验证当前对话。
+
+macOS 保持原有行为：以只读客户端连接 `$CODEX_HOME/ipc/ipc.sock`（兼容旧版临时 Socket），通过本地 IPC 跟随任务 ID 并解析对应根会话日志；IPC 不可用时退回最近更新的兼容根会话。macOS 版会验证 IPC 路径确实是当前用户拥有的 Unix Socket，并验证其目录不可被其他用户写入。程序只连接，不会创建、删除或替换 Codex 的 Socket。
 
 ## 隐私说明
 
@@ -141,7 +148,9 @@ Codex JSONL 可能包含对话内容。报告问题时请勿上传这些文件�
 
 ### 切换任务后没有更新
 
-当前任务信号来自 Codex 内部 IPC。请同时重启 Codex Desktop 和本工具；如果 Codex 刚更新，请检查项目是否已有新版本。回退模式能显示近期 Token，但不一定能识别界面中选中的未运行任务。
+Windows 先检查是否勾选了**锁定当前会话**。前台标题需要与本地索引中的一个对话精确匹配；同名对话可改为不同名称。打开已完成过模型回复的对话，确认配置的 `sessions` 目录旁存在 `session_index.jsonl`。未知标题、缺失日志、不可用的 UI Automation 数据或未写完的索引会显示等待，不会借用另一个对话的数值。修改 `CODEX_HOME` 后重启本工具。150 ms 是轮询目标，不是完成刷新时间的保证。
+
+macOS 仍从内部 IPC 获取任务信号。请同时重启 Codex Desktop 和本工具；如果 Codex 刚更新，请检查项目是否已有新版本。其回退模式能显示近期 Token，但不一定能识别界面中选中的未运行任务。
 
 ### macOS 菜单栏显示 `Token —`
 
@@ -164,8 +173,14 @@ Codex JSONL 可能包含对话内容。报告问题时请勿上传这些文件�
 ```powershell
 dotnet restore .\src\CodexTokenOverlay\CodexTokenOverlay.csproj
 dotnet build .\src\CodexTokenOverlay\CodexTokenOverlay.csproj -c Release
+dotnet run --project .\tests\VisibleThreadRouting -c Release
+dotnet run --project .\tests\ThreadSwitching -c Release
+dotnet run --project .\tests\ContextAlerts -c Release
 .\scripts\Test-LogParser.ps1
+.\scripts\Test-OverlayLogic.ps1 -Area All
 ```
+
+合成数据测试分别包含：25 项标题路由检查、16 项会话选择/日志/锁定/过期结果检查、18 项上下文提醒检查。原有日志解析和悬浮窗逻辑脚本继续验证既有行为。这些测试不能证明所有 Codex Desktop 版本的兼容性或真实刷新延迟，仍需在目标桌面验证实际前台对话切换。
 
 同时生成本地轻量版和独立版发行包：
 
@@ -174,6 +189,13 @@ dotnet build .\src\CodexTokenOverlay\CodexTokenOverlay.csproj -c Release
 ```
 
 也可以把 `-Variant` 设置为 `Lite` 或 `Standalone`，只生成其中一种。
+
+发布脚本会检查两种 Windows 目标的 PE 架构，并对 x64 产物执行原有的 EXE 探针；Arm64 仍为交叉构建。单独发布到 `dist/win-x64` 后也可手动验证：
+
+```powershell
+.\scripts\Test-PublishedExecutable.ps1 -ExecutablePath .\dist\win-x64\CodexTokenOverlay.exe
+.\scripts\Test-PeArchitecture.ps1 -ExecutablePath .\dist\win-x64\CodexTokenOverlay.exe -Architecture x64
+```
 
 ### macOS
 

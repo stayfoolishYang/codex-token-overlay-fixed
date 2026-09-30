@@ -1280,7 +1280,7 @@ try {
             'OverlayContext 主题回调必须向主窗体和高亮窗体应用同一调色板。'
 
         $contextConstructor = @($contextType.GetConstructors($instanceFlags) | Where-Object {
-            $_.GetParameters().Count -eq 2
+            $_.GetParameters().Count -eq 3
         })[0]
         $constructorCalls = @(
             foreach ($token in @(Get-MethodCallTokens $contextConstructor)) {

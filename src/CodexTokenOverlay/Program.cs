@@ -32,7 +32,15 @@ internal static class Program
         }
 
         var settingsPath = OverlaySettings.ResolveSettingsOverride(args);
-        Application.Run(new OverlayContext(sessionRoot, settingsPath));
+        string? statusPath = null;
+        for (var index = 0; index < args.Length - 1; index++)
+        {
+            if (args[index].Equals("--status-file", StringComparison.OrdinalIgnoreCase))
+            {
+                statusPath = args[index + 1];
+            }
+        }
+        Application.Run(new OverlayContext(sessionRoot, settingsPath, statusPath));
         GC.KeepAlive(singleInstanceMutex);
     }
 }
@@ -445,6 +453,9 @@ internal sealed class TokenLogMonitor : IDisposable
 
     public string? PreferredThreadId { get; set; }
 
+    // A visible-window route must never fall back to an unrelated busy session.
+    public bool RequirePreferredThread { get; set; }
+
     public TokenLogMonitor(string? sessionRoot = null)
     {
         _sessionRoot = sessionRoot ?? SessionPathResolver.Resolve();
@@ -466,20 +477,30 @@ internal sealed class TokenLogMonitor : IDisposable
     }
 
     public bool PinActiveSession { get; set; }
+    public string? PinnedThreadId { get; set; }
 
     public TokenSnapshot? Poll(bool forceFullScan = false)
     {
-        if (!Directory.Exists(_sessionRoot))
+        if (!PinActiveSession && RequirePreferredThread && string.IsNullOrWhiteSpace(PreferredThreadId))
         {
+            ProcessChangedPaths(allowAutomaticSwitch: false);
+            SwitchActiveLog(null);
             return null;
         }
 
-        var usePreferredThread = !PinActiveSession && !string.IsNullOrWhiteSpace(PreferredThreadId);
+        if (!Directory.Exists(_sessionRoot))
+        {
+            SwitchActiveLog(null, PreferredThreadId);
+            return null;
+        }
+
+        var requestedThread = PinActiveSession ? PinnedThreadId : PreferredThreadId;
+        var usePreferredThread = !string.IsNullOrWhiteSpace(requestedThread);
         ProcessChangedPaths(allowAutomaticSwitch: !usePreferredThread);
 
         if (usePreferredThread)
         {
-            SelectPreferredRootSession(PreferredThreadId!);
+            SelectPreferredRootSession(requestedThread!);
         }
         else if (forceFullScan || _activeLogPath is null || DateTime.UtcNow - _lastFullScanUtc > TimeSpan.FromSeconds(20))
         {

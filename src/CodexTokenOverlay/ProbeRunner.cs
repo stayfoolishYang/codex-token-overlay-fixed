@@ -76,7 +76,32 @@ internal static class ProbeRunner
             return true;
         }
 
-        // IPC 探针用于验证 Codex 当前可见任务广播，不启动悬浮条。
+        // Read the foreground window's title and matching token log together.
+        if (args.Count >= 2 && args[0].Equals("--visible-thread-probe", StringComparison.OrdinalIgnoreCase))
+        {
+            using var routeMonitor = new CodexVisibleThreadMonitor(sessionRoot);
+            using var monitor = new TokenLogMonitor(sessionRoot) { RequirePreferredThread = true };
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            ActiveThreadRouteStatus route;
+            do
+            {
+                Thread.Sleep(50);
+                route = routeMonitor.GetStatus();
+            }
+            while (DateTime.UtcNow < deadline && string.IsNullOrWhiteSpace(route.ThreadId));
+            monitor.PreferredThreadId = route.ThreadId;
+            var snapshot = monitor.Poll();
+            var latest = routeMonitor.GetStatus();
+            WriteJson(args[1], new
+            {
+                Route = latest,
+                Snapshot = new ThreadPollTicket(0, route.Version, false).CanApply(0, latest, false, snapshot)
+                    ? snapshot : null
+            });
+            return true;
+        }
+
+        // IPC 探针仅诊断订阅广播；订阅不等于当前可见任务。
         if (args.Count >= 2 && args[0].Equals("--ipc-probe", StringComparison.OrdinalIgnoreCase))
         {
             using var routeMonitor = new CodexIpcActiveThreadMonitor();

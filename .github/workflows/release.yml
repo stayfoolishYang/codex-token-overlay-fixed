@@ -48,6 +48,16 @@ jobs:
         shell: pwsh
         run: dotnet run --project tests/ContextAlerts -c Release
 
+      - name: Test visible-thread title routing
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: dotnet run --project tests/VisibleThreadRouting -c Release
+
+      - name: Test conversation switches and stale-result rejection
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: dotnet run --project tests/ThreadSwitching -c Release
+
       - name: Test log parsing and CODEX_HOME discovery
         if: matrix.rid == 'win-x64'
         shell: pwsh

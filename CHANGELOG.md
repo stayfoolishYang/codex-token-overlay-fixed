@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Identify the Windows foreground conversation through the read-only UI Automation `RootWebArea` document title and `session_index.jsonl`, instead of treating background IPC stream subscriptions as the selected conversation.
+- Clear the previous conversation's values after detecting a switch and reject log results from earlier route/selection generations, including rapid A → B → A switches and task-locking changes.
+- Wait when a Windows title is ambiguous or unknown, the index is missing or incomplete, or the selected log has no token snapshot; do not substitute the most recently written background session.
+- Pin the conversation whose token values are actually displayed, rather than an unfinished background reader's target.
+
+### Changed
+
+- Target a 150 ms Windows selection/display polling interval and apply accepted log results when they finish. UI Automation, disk access, and UI scheduling can still add delay; this is not a refresh-time guarantee.
+- Keep macOS IPC task following and recent-root-session fallback unchanged.
+
+### Added
+
+- Synthetic Windows regression suites with 25 title-routing checks and 16 selection, missing-log, locking, and delayed-result checks, alongside the existing 18 context-alert checks and prior parser/overlay/published-executable regressions.
+
 ## [0.3.0] - 2026-08-13
 
 ### Added

@@ -2,10 +2,12 @@
 
 [简体中文](README.zh-CN.md)
 
-Codex Token Overlay is a read-only desktop companion that shows token usage for the task currently selected in Codex Desktop. It supports Windows and macOS, follows idle task switches through Codex's local IPC channel, and reads token metrics from local JSONL session logs.
+Codex Token Overlay is a read-only desktop companion that shows token usage for the task currently selected in Codex Desktop. Windows identifies the foreground conversation from its accessible document title and local session index; macOS follows tasks through Codex's local IPC channel. Both platforms read token metrics from local JSONL session logs, including logs of idle tasks.
 
 > [!IMPORTANT]
-> This is an unofficial community project. It is not developed, endorsed, or supported by OpenAI. Codex Desktop's JSONL schema and IPC messages are internal implementation details and may change in a future Codex release.
+> This is an unofficial community project. It is not developed, endorsed, or supported by OpenAI. Codex Desktop's accessible document title, session index, JSONL schema, and IPC messages are internal implementation details and may change in a future Codex release.
+
+This repository includes a Windows conversation-switching fix. No Release containing this fix has been published yet; [build from this source](#build-from-source) to use it. Upstream release packages do not include the changes described under Unreleased here.
 
 ## Features
 
@@ -15,8 +17,9 @@ Codex Token Overlay is a read-only desktop companion that shows token usage for 
 - Lets you choose exactly which fields are visible.
 - Uses a compact, no-focus capsule that follows the Codex main window, plus a tray icon on Windows.
 - Uses a native menu-bar item on macOS, with launch-at-login control in its menu.
-- Falls back to the newest root Codex Desktop session when internal IPC is unavailable.
-- Reads local files only; it has no telemetry, analytics, network API, or upload feature.
+- On Windows, clears old values after detecting a selection change and waits when the visible title cannot uniquely identify a local session.
+- On macOS, falls back to the newest root Codex Desktop session when internal IPC is unavailable.
+- Reads local state only; it has no telemetry, analytics, network API, or upload feature.
 
 ## Windows context remaining and alerts
 
@@ -41,18 +44,18 @@ the overlay, edit `ContextAlertThresholds` in the settings JSON, and restart:
 "ContextAlertThresholds": [20, 10, 5]
 ```
 
-Automatic alerts require a matching active-thread IPC route, or an explicitly
-pinned session. They are suppressed when the overlay falls back to the latest log
-without identifying the selected thread. Values are snapshots of the latest model
-request, not predictions of the next request or exact compaction timing.
+Automatic alerts require a matching foreground-conversation route, or an explicitly
+pinned displayed session. They are suppressed while Windows cannot identify the
+selected thread. Values are snapshots of the latest model request, not predictions
+of the next request or exact compaction timing.
 
-This builds on the original project's existing task routing and local-only data
-collection. These additions currently apply to Windows; macOS is unchanged.
+These additions and the foreground-title routing fix apply to Windows; macOS
+task routing and its IPC fallback are unchanged.
 See the [Chinese development notes](README.context-monitor.zh-CN.md).
 
 ## Downloads
 
-Download the newest ZIP from [GitHub Releases](../../releases).
+There is currently no download package for this repository's Windows switching fix. The following table describes the original project's [upstream release assets](https://github.com/soleillevant0125/codex-token-overlay/releases); build this source for the fix.
 
 | Platform | Asset | Notes |
 | --- | --- | --- |
@@ -71,8 +74,8 @@ No Windows package requires PowerShell. macOS users do not need Xcode, Swift, or
 
 ## Run on Windows
 
-1. Download the `-lite.zip` asset when .NET 10 Desktop Runtime is installed; otherwise choose the same architecture without `-lite`.
-2. Extract it anywhere.
+1. Build and publish this source as described below. Use Lite when the matching .NET 10 Desktop Runtime is installed, or Standalone to include the runtime.
+2. Extract the generated local archive anywhere, or open its publish directory.
 3. Double-click `CodexTokenOverlay.exe`.
 
 The default Windows workflow uses manual main-window attachment. Choose **调整位置和大小…** from the tray, then drag the capsule onto the Codex main window. The nearest of its eight reference points (four corners and four edge midpoints) becomes the saved reference, so the capsule follows that same point and relative offset when the Codex window moves or resizes. A drop over the built-in pet, desktop, another app, or any other non-main Codex surface is invalid: the target highlight clears, the placement cannot be saved, and the capsule immediately returns to its last valid position. Drag the bottom-right handle to resize the entire capsule and expanded panel proportionally from 60% to 130%, including text, spacing, radii, and padding.
@@ -82,6 +85,8 @@ Press **Enter** or choose **完成调整** in the tray to save; press **Esc** or
 Use **收起时显示 > 左侧指标** and **收起时显示 > 右侧指标** in the tray menu to choose the two values shown while collapsed. The compatibility submenu **传统定位** retains **标题栏右上**, **自动吸附**, **窗口内右上**, and **窗口内右下** for existing workflows. Selecting a traditional placement disables manual attachment until adjustment or reset is used again. The bottom-right traditional placement expands upward. In title-bar mode, the requested scale is reduced only as much as necessary to use the largest scale that fits completely inside the title bar; the overlay never moves into the Codex client area, and the requested scale returns automatically when space permits. Other narrow placements still fall back from two collapsed metrics to one metric and then hidden until space returns.
 
 Click the capsule normally to expand its full metric panel; click it again or click elsewhere to collapse it, while interacting inside the panel keeps it open. The overlay does not take focus from the Codex input box. Its visual attachment is a separate companion window that follows Codex geometry; it is not injected into or embedded in the Codex process or UI tree. It follows the Windows application light/dark setting live, including the capsule, expanded panel, edit decoration, and attachment target ring; there is no manual theme option. It appears only while a recognized Codex Desktop window is in the foreground and hides when Codex loses foreground. The tray menu also controls expanded-panel fields, task locking, temporary visibility, and exit.
+
+**锁定当前会话** pins the conversation whose values are currently displayed. Further task switches keep that conversation's metrics until you uncheck the option. The option is available after a token snapshot has been displayed; it does not pin an unfinished background read.
 
 Unsigned GitHub executables can trigger Windows SmartScreen. Confirm that the file came from this repository and compare its SHA-256 checksum before choosing **More info > Run anyway**.
 
@@ -108,6 +113,8 @@ The session directory is resolved in this order:
 1. `--sessions <path>` when supplied by a developer or test runner.
 2. `$CODEX_HOME/sessions` when `CODEX_HOME` is set.
 3. The default `~/.codex/sessions` directory.
+
+Windows also reads `session_index.jsonl` beside the resolved `sessions` directory to match the foreground document title to a conversation ID. A missing or unreadable index leaves the display waiting for identification.
 
 The application itself can be stored anywhere, although `/Applications` is recommended on macOS so launch-at-login and Gatekeeper behavior are predictable.
 
@@ -136,17 +143,16 @@ These values describe local session-log events. They are not an invoice, an API 
 
 ## How task following works
 
-The app never modifies Codex data:
+The app never modifies Codex data. Windows uses these steps:
 
-1. It connects as a read-only client to Codex Desktop's local IPC endpoint.
-   - Windows: `\\.\pipe\codex-ipc`
-   - macOS: `$CODEX_HOME/ipc/ipc.sock`, with compatible legacy socket fallbacks
-2. It listens for the task ID followed by the active Codex window.
-3. It finds the matching root-session JSONL file and reads the newest complete `token_count` event.
-4. A task-ID change forces an immediate parse, so switching to an idle task does not depend on a new log write.
-5. If IPC is unavailable, it shows the newest Codex Desktop root session instead.
+1. Read the foreground Codex main window's `RootWebArea` document name through Windows UI Automation, without controlling the window or changing focus.
+2. Match that title exactly to the latest complete record for each conversation ID in `session_index.jsonl`. Multiple IDs with the same title, unknown titles, and unavailable or incomplete index data leave the route unidentified.
+3. After detecting a route change, clear the preceding conversation's values and read the matching root-session JSONL file's newest complete `token_count` event. A missing log or token snapshot shows a waiting state.
+4. Recheck the foreground window, document title, and index revision before publishing a route. Reject asynchronous log results from an older route or selection generation, including a rapid A → B → A switch or a change to task locking.
 
-On macOS, the app validates that an IPC path is a Unix socket owned by the current user and that its directory is not writable by another user. It only connects; it never creates, deletes, or replaces Codex's socket.
+Windows targets a 150 ms polling interval for selection and display updates. This is not a guaranteed end-to-end refresh time: a slow accessibility provider, disk reads, or UI scheduling can add delay. A task switch does not require a new log write. Windows waits instead of selecting the most recently written background log. Outside the Codex foreground window, the overlay hides and preserves the last route; it validates the visible conversation again when Codex returns to the foreground.
+
+macOS retains its existing behavior: it connects as a read-only client to `$CODEX_HOME/ipc/ipc.sock`, with compatible legacy socket fallbacks, follows the task ID from local IPC, and parses the matching root-session log. If IPC is unavailable, it shows the newest compatible Codex Desktop root session instead. The app validates that the IPC path is a Unix socket owned by the current user and that its directory is not writable by another user. It only connects; it never creates, deletes, or replaces Codex's socket.
 
 ## Privacy
 
@@ -161,7 +167,9 @@ Session JSONL files can contain conversation data. Do not upload them when repor
 
 ### Switching tasks does not update the display
 
-Task selection comes from an internal Codex IPC message. Restart both Codex Desktop and Codex Token Overlay, then check for a newer release if Codex was recently updated. Fallback mode can show recent token data but cannot always identify an idle task selected in the UI.
+On Windows, check that **锁定当前会话** is unchecked. The visible title must exactly match one conversation in the local session index. Rename conversations with duplicate titles so they can be distinguished, and open a conversation with a completed model response. Unknown titles, missing logs, unavailable UI Automation data, or a partial index write show a waiting state instead of another conversation's numbers. Check `session_index.jsonl` beside the configured `sessions` directory and restart the overlay after changing `CODEX_HOME`. A 150 ms target polling interval does not guarantee completion within 150 ms.
+
+On macOS, selection still comes from internal IPC. Restart both Codex Desktop and the overlay, and check for a newer release if Codex was recently updated. Its fallback can show recent token data but cannot always identify an idle task selected in the UI.
 
 ### The macOS menu item says `Token —`
 
@@ -184,8 +192,14 @@ Development requires the .NET 10 SDK:
 ```powershell
 dotnet restore .\src\CodexTokenOverlay\CodexTokenOverlay.csproj
 dotnet build .\src\CodexTokenOverlay\CodexTokenOverlay.csproj -c Release
+dotnet run --project .\tests\VisibleThreadRouting -c Release
+dotnet run --project .\tests\ThreadSwitching -c Release
+dotnet run --project .\tests\ContextAlerts -c Release
 .\scripts\Test-LogParser.ps1
+.\scripts\Test-OverlayLogic.ps1 -Area All
 ```
+
+The synthetic suites contain 25 title-routing checks, 16 selection/log/locking/late-result checks, and 18 context-alert checks. The existing log-parser and overlay-logic scripts cover the prior behavior. They do not prove latency or compatibility with every Codex Desktop build; actual foreground task switches should also be checked on the target desktop.
 
 Create both local Lite and Standalone archives with:
 
@@ -194,6 +208,13 @@ Create both local Lite and Standalone archives with:
 ```
 
 Set `-Variant` to `Lite` or `Standalone` to build only one form.
+
+The publishing script checks PE architecture for both Windows targets and runs the existing executable probes on x64 outputs. Arm64 remains cross-built. To check a separately published x64 executable:
+
+```powershell
+.\scripts\Test-PublishedExecutable.ps1 -ExecutablePath .\dist\win-x64\CodexTokenOverlay.exe
+.\scripts\Test-PeArchitecture.ps1 -ExecutablePath .\dist\win-x64\CodexTokenOverlay.exe -Architecture x64
+```
 
 ### macOS
 

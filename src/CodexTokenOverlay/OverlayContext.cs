@@ -6,7 +6,7 @@ internal sealed class OverlayContext : ApplicationContext
 {
     private readonly OverlaySettings _settings;
     private readonly ContextAlertTracker _contextAlerts = new();
-    private readonly CodexIpcActiveThreadMonitor _routeMonitor = new();
+    private readonly CodexVisibleThreadMonitor _routeMonitor;
     private readonly TokenLogMonitor _monitor;
     private readonly TokenStripForm _form = new();
     private readonly AttachmentTargetHighlightForm _targetHighlight = new();
@@ -46,11 +46,17 @@ internal sealed class OverlayContext : ApplicationContext
     private string? _observedThreadId;
     private ActiveThreadRouteStatus _pendingRouteStatus = new(null, 0, false, 0, null);
     private long _observedRouteVersion = -1;
+    private long _pollEpoch;
+    private readonly string? _statusPath;
+    private string? _lastStatus;
+    private string? _pinnedThreadId;
 
-    public OverlayContext(string sessionRoot, string? settingsPath = null)
+    public OverlayContext(string sessionRoot, string? settingsPath = null, string? statusPath = null)
     {
+        _statusPath = statusPath;
         _settingsPath = settingsPath;
         _monitor = new TokenLogMonitor(sessionRoot);
+        _routeMonitor = new CodexVisibleThreadMonitor(sessionRoot);
         _settings = OverlaySettings.Load(_settingsPath);
         _presentation = OverlayPresentationBuilder.CreateWaiting(
             "正在寻找当前 Codex 会话…",
@@ -70,6 +76,8 @@ internal sealed class OverlayContext : ApplicationContext
         _pinSessionMenuItem.CheckedChanged += (_, _) =>
         {
             _monitor.PinActiveSession = _pinSessionMenuItem.Checked;
+            _pinnedThreadId = _pinSessionMenuItem.Checked ? _lastSnapshot?.ThreadId : null;
+            _pollEpoch++;
             _pinSessionMenuItem.Text = _pinSessionMenuItem.Checked ? "已锁定当前会话" : "锁定当前会话";
         };
         menu.Items.Add(_pinSessionMenuItem);
@@ -163,7 +171,7 @@ internal sealed class OverlayContext : ApplicationContext
         UpdateFieldChecks();
         UpdateCollapsedFieldChecks();
 
-        _timer = new System.Windows.Forms.Timer { Interval = 350 };
+        _timer = new System.Windows.Forms.Timer { Interval = 150 };
         _timer.Tick += (_, _) => Tick();
         _outsideClickTimer = new System.Windows.Forms.Timer { Interval = 40 };
         _outsideClickTimer.Tick += (_, _) => PollOutsidePointer();
@@ -299,14 +307,61 @@ internal sealed class OverlayContext : ApplicationContext
             return;
         }
 
-        RequestBackgroundPoll();
-
+        _pendingRouteStatus = _routeMonitor.GetStatus();
         if (_pendingRouteStatus.Version != _observedRouteVersion)
         {
             _observedRouteVersion = _pendingRouteStatus.Version;
+            _pollEpoch++;
+            if (!_monitor.PinActiveSession)
+            {
+                // Clear the previous values before any slower file read completes.
+                _pendingSnapshot = null;
+                _pendingThreadId = _pendingRouteStatus.ThreadId;
+                _pendingSessionVersion = -1;
+                _observedSessionVersion = -2;
+                _lastSnapshot = null;
+            }
             UpdateSessionMenuText();
         }
 
+        RequestBackgroundPoll();
+        ApplyPendingData();
+
+        if (_manualAttachment.IsEditing)
+        {
+            if (_currentTarget is null
+                || !CodexWindowLocator.TryRefreshKnownCodexTarget(
+                    _currentTarget,
+                    out var refreshedTarget))
+            {
+                CancelManualEditing(restoreFocus: false, relayout: false);
+                CollapseAndHide();
+                return;
+            }
+
+            _currentTarget = refreshedTarget;
+            if (_manualAttachment.ShouldApplyStaticDraft)
+            {
+                ApplyEditDraftLayout(refreshedTarget);
+            }
+            UpdateManualMenuState();
+            return;
+        }
+
+        if (_manuallyHidden || !CodexWindowLocator.TryGetForegroundCodexTarget(out var target))
+        {
+            CollapseAndHide();
+            UpdateManualMenuState();
+            return;
+        }
+
+        _currentTarget = target;
+        ApplyLayout(target);
+        UpdateManualMenuState();
+    }
+
+    private void ApplyPendingData()
+    {
         if (_activeRouteThread.ObserveAndCollapse(_pendingRouteStatus, _interaction))
         {
             StopOutsideClickPolling();
@@ -324,9 +379,10 @@ internal sealed class OverlayContext : ApplicationContext
             var shortPendingId = string.IsNullOrWhiteSpace(_pendingThreadId)
                 ? "等待识别"
                 : OverlayPresentationBuilder.ShortThreadId(_pendingThreadId);
-            _pinSessionMenuItem.Enabled = !string.IsNullOrWhiteSpace(_pendingThreadId);
+            _pinSessionMenuItem.Enabled = _pinSessionMenuItem.Checked;
+            _trayIcon.Text = TrimTrayText($"Codex {shortPendingId} · 等待 token 数据");
             _presentation = OverlayPresentationBuilder.CreateWaiting(
-                $"等待会话 {shortPendingId} 的 token 数据…",
+                string.IsNullOrWhiteSpace(_pendingThreadId) ? "识别当前对话…" : "读取当前对话数据…",
                 _settings.CollapsedPrimaryField,
                 _settings.CollapsedSecondaryField,
                 _settings.VisibleFields);
@@ -359,43 +415,38 @@ internal sealed class OverlayContext : ApplicationContext
             UpdateSessionMenuText();
         }
 
-        if (_manualAttachment.IsEditing)
-        {
-            if (_currentTarget is null
-                || !CodexWindowLocator.TryRefreshKnownCodexTarget(
-                    _currentTarget,
-                    out var refreshedTarget))
-            {
-                CancelManualEditing(restoreFocus: false, relayout: false);
-                CollapseAndHide();
-                return;
-            }
-
-            _currentTarget = refreshedTarget;
-            if (_manualAttachment.ShouldApplyStaticDraft)
-            {
-                ApplyEditDraftLayout(refreshedTarget);
-            }
-            UpdateManualMenuState();
-            return;
-        }
-
-        if (_manuallyHidden || !CodexWindowLocator.TryGetForegroundCodexTarget(out var target))
-        {
-            CollapseAndHide();
-            UpdateManualMenuState();
-            return;
-        }
-
         if (activeThreadChanged)
         {
             _interaction.CollapseForHostChange();
             StopOutsideClickPolling();
         }
+        WriteDiagnosticStatus();
+    }
 
-        _currentTarget = target;
-        ApplyLayout(target);
-        UpdateManualMenuState();
+    // Optional local diagnostics report the values actually applied to the form.
+    private void WriteDiagnosticStatus()
+    {
+        if (string.IsNullOrWhiteSpace(_statusPath)) return;
+        var status = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            SelectedThreadId = _pendingRouteStatus.ThreadId,
+            DisplayedThreadId = _lastSnapshot?.ThreadId,
+            TotalTokens = _lastSnapshot?.TotalTokens,
+            ContextUsedTokens = _lastSnapshot?.ContextUsedTokens,
+            ContextWindowTokens = _lastSnapshot?.ContextWindowTokens,
+            RouteVersion = _pendingRouteStatus.Version,
+            IsPinned = _monitor.PinActiveSession
+        });
+        if (status == _lastStatus) return;
+        try
+        {
+            File.WriteAllText(_statusPath, status);
+            _lastStatus = status;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Diagnostics must never interfere with normal window updates.
+        }
     }
 
     private void RequestBackgroundPoll()
@@ -407,20 +458,17 @@ internal sealed class OverlayContext : ApplicationContext
         }
 
         var uiScheduler = TaskScheduler.FromCurrentSynchronizationContext();
+        var routeStatus = _pendingRouteStatus;
+        var ticket = new ThreadPollTicket(_pollEpoch, routeStatus.Version, _monitor.PinActiveSession);
+        var pinnedThreadId = _pinnedThreadId;
         _ = Task.Run(() =>
             {
-                var routeStatus = _routeMonitor.GetStatus();
-                if (!_monitor.PinActiveSession)
+                _monitor.PinnedThreadId = pinnedThreadId;
+                if (!ticket.IsPinned)
                 {
-                    if (!string.IsNullOrWhiteSpace(routeStatus.ThreadId))
-                    {
-                        _monitor.PreferredThreadId = routeStatus.ThreadId;
-                    }
-                    else if (!routeStatus.IsConnected)
-                    {
-                        _monitor.PreferredThreadId = null;
-                    }
+                    _monitor.PreferredThreadId = routeStatus.ThreadId;
                 }
+                _monitor.RequirePreferredThread = true;
                 var snapshot = _monitor.Poll();
                 return (
                     Snapshot: snapshot,
@@ -432,12 +480,14 @@ internal sealed class OverlayContext : ApplicationContext
             {
                 try
                 {
-                    if (Volatile.Read(ref _disposed) == 0 && task.Status == TaskStatus.RanToCompletion)
+                    if (Volatile.Read(ref _disposed) == 0 && task.Status == TaskStatus.RanToCompletion
+                        && ticket.CanApply(_pollEpoch, _routeMonitor.GetStatus(), _monitor.PinActiveSession,
+                            task.Result.Snapshot))
                     {
                         _pendingSnapshot = task.Result.Snapshot;
                         _pendingSessionVersion = task.Result.Version;
                         _pendingThreadId = task.Result.ThreadId;
-                        _pendingRouteStatus = task.Result.RouteStatus;
+                        ApplyPendingData();
                     }
                 }
                 finally
@@ -936,7 +986,9 @@ internal sealed class OverlayContext : ApplicationContext
         {
             return $" · 多窗口 {status.ActiveWindowCount}";
         }
-        return status.IsConnected ? " · 已同步" : " · 日志模式";
+        return !string.IsNullOrWhiteSpace(status.ThreadId)
+            ? " · 当前窗口"
+            : " · 等待识别当前对话";
     }
 
     private void ExitOverlay()
